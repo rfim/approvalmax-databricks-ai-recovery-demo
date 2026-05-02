@@ -47,6 +47,14 @@ jobs:
           npm install -g @openai/codex
           codex --version
 
+      - name: Check OpenAI API key presence
+        run: |
+          test -n "$OPENAI_API_KEY" && echo "OPENAI_API_KEY is set"
+
+      - name: Authenticate Codex with API key
+        run: |
+          codex login --api-key "$OPENAI_API_KEY"
+
       - name: Download failed workflow logs
         run: |
           mkdir -p recovery
@@ -70,6 +78,14 @@ jobs:
               failure_type = "databricks_auth_failure"
           elif "bundle validate" in lower or ("deploying resources" in lower and "error" in lower):
               failure_type = "bundle_resource_failure"
+          elif "cannot cast" in lower or "type mismatch" in lower:
+              failure_type = "schema_type_change"
+          elif "duplicate" in lower or "unique" in lower:
+              failure_type = "duplicate_or_grain_failure"
+          elif "not_null" in lower or "null value" in lower:
+              failure_type = "missing_required_value"
+          elif "approval_cycle_time" in lower or "negative" in lower:
+              failure_type = "invalid_business_metric"
           else:
               failure_type = "unknown_failure"
 
@@ -115,6 +131,18 @@ jobs:
 
           If failure_type is bundle_resource_failure:
           - Fix databricks.yml or resources/*.yml minimally.
+
+          If failure_type is schema_type_change:
+          - Add safe cast, quarantine logic, and a test where appropriate.
+
+          If failure_type is duplicate_or_grain_failure:
+          - Add deterministic deduplication and a uniqueness/grain test.
+
+          If failure_type is missing_required_value:
+          - Add quarantine logic and not-null test. Do not fabricate business keys.
+
+          If failure_type is invalid_business_metric:
+          - Add diagnostics, tests, and quarantine. Do not redefine metrics.
 
           If failure_type is unknown_failure:
           - Create only a diagnostic note under docs/recovery/.
