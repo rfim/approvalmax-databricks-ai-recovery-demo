@@ -53,7 +53,7 @@ jobs:
 
       - name: Authenticate Codex with API key
         run: |
-          codex login --api-key "$OPENAI_API_KEY"
+          printenv OPENAI_API_KEY | codex login --with-api-key
 
       - name: Download failed workflow logs
         run: |
