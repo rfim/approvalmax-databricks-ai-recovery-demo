@@ -1,0 +1,162 @@
+name: Codex Auto-Fix on Failure
+
+on:
+  workflow_run:
+    workflows:
+      - Run Databricks Bundle Job
+      - Databricks Bundle CI
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  codex-auto-fix:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
+      FAILED_RUN_URL: ${{ github.event.workflow_run.html_url }}
+      FAILED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+
+    steps:
+      - name: Checkout failing commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FAILED_HEAD_SHA }}
+          fetch-depth: 0
+
+      - name: Install GitHub CLI and jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh jq
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Codex CLI
+        run: |
+          npm install -g @openai/codex
+          codex --version
+
+      - name: Download failed workflow logs
+        run: |
+          mkdir -p recovery
+          gh run view "$FAILED_RUN_ID" --log > recovery/failed_workflow.log || true
+          tail -n 120 recovery/failed_workflow.log || true
+
+      - name: Create failure context
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          log = Path("recovery/failed_workflow.log").read_text(errors="ignore")
+          lower = log.lower()
+
+          if "schema_not_found" in lower or ("schema" in lower and "cannot be found" in lower):
+              failure_type = "missing_schema"
+          elif "uv: command not found" in lower:
+              failure_type = "missing_tool_uv"
+          elif "cannot configure default credentials" in lower or "default auth" in lower:
+              failure_type = "databricks_auth_failure"
+          elif "bundle validate" in lower or ("deploying resources" in lower and "error" in lower):
+              failure_type = "bundle_resource_failure"
+          else:
+              failure_type = "unknown_failure"
+
+          context = {
+              "failed_run_url": "${{ env.FAILED_RUN_URL }}",
+              "failure_type": failure_type,
+              "instruction": "Use AGENTS.md and skills/approvalmax-semi-self-recovery/SKILL.md. Keep the patch minimal and safe.",
+              "log_tail": log[-20000:]
+          }
+
+          Path("recovery/failure_context.json").write_text(json.dumps(context, indent=2))
+          print(json.dumps({k: v for k, v in context.items() if k != "log_tail"}, indent=2))
+          PY
+
+      - name: Run Codex recovery
+        run: |
+          codex exec --sandbox workspace-write "
+          Follow AGENTS.md strictly.
+
+          Read:
+          - recovery/failed_workflow.log
+          - recovery/failure_context.json
+          - skills/approvalmax-semi-self-recovery/SKILL.md
+          - databricks.yml
+          - resources/*.yml
+          - src/
+          - .github/workflows/
+
+          Create the smallest safe patch for the detected failure.
+
+          If failure_type is missing_schema:
+          - Find the file that runs USE SCHEMA.
+          - Add CREATE SCHEMA IF NOT EXISTS before USE SCHEMA.
+          - Preserve existing catalog/schema variables.
+          - Add a recovery note under docs/recovery/.
+
+          If failure_type is missing_tool_uv:
+          - Add Install uv step to the relevant workflow.
+
+          If failure_type is databricks_auth_failure:
+          - Fix workflow env usage if needed.
+          - Never print secrets.
+
+          If failure_type is bundle_resource_failure:
+          - Fix databricks.yml or resources/*.yml minimally.
+
+          If failure_type is unknown_failure:
+          - Create only a diagnostic note under docs/recovery/.
+
+          Do not auto-merge.
+          Do not disable tests.
+          Do not change secrets.
+          Do not touch unrelated files.
+          "
+
+      - name: Show generated diff
+        run: |
+          git status
+          git diff
+
+      - name: Create pull request with Codex fix
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "fix: codex recovery patch for failed workflow"
+          branch: codex/auto-fix-${{ github.event.workflow_run.run_id }}
+          base: main
+          title: "[AI-DRAFT] Codex recovery patch for failed Databricks workflow"
+          body: |
+            Codex generated this draft PR after a failed workflow.
+
+            Failed workflow:
+            ${{ env.FAILED_RUN_URL }}
+
+            Files used:
+            - AGENTS.md
+            - skills/approvalmax-semi-self-recovery/SKILL.md
+            - recovery/failed_workflow.log
+            - recovery/failure_context.json
+
+            Human review checklist:
+            - [ ] Patch is minimal
+            - [ ] No tests were disabled
+            - [ ] No secrets were changed
+            - [ ] No unrelated files were touched
+            - [ ] Databricks bundle validation passes
+            - [ ] The failed workflow passes after merge
+          labels: |
+            ai-draft
+            data-recovery
