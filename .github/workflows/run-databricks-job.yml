@@ -21,8 +21,19 @@ jobs:
       - name: Install Databricks CLI
         uses: databricks/setup-cli@main
 
-      - name: Deploy bundle to dev
-        run: databricks bundle deploy -t dev
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Run bundle job
-        run: databricks bundle run sample_job -t dev
+      - name: Check Databricks auth
+        run: |
+          databricks current-user me
+
+      - name: Deploy bundle to dev
+        run: |
+          databricks bundle deploy -t dev
+
+      - name: Run sample job
+        run: |
+          databricks bundle run sample_job -t dev
