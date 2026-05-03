@@ -18,6 +18,7 @@ jobs:
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      CDC_JOB_RESOURCE: approvalmax_cdc_automation_serverless
 
     steps:
       - name: Checkout repo
@@ -25,47 +26,74 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Detect newly added CDC files
-        id: detect_new_files
+      - name: Detect CDC file changes
+        id: detect_cdc_files
         run: |
+          echo "Checking CDC file changes in the latest commit..."
+
+          changed_files="$(git diff --name-status HEAD~1 HEAD | grep 'sample_data/approvalmax_cdc/' || true)"
           added_files="$(git diff --name-status HEAD~1 HEAD | awk '$1 == "A" {print $2}' | grep '^sample_data/approvalmax_cdc/' || true)"
+
+          echo "Changed CDC files:"
+          echo "$changed_files"
 
           echo "Newly added CDC files:"
           echo "$added_files"
 
-          if [ -z "$added_files" ]; then
-            echo "No newly added CDC files. Skipping Databricks CDC job."
-            echo "has_new_files=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$changed_files" ]; then
+            echo "No CDC file changes detected. Skipping."
+            echo "has_cdc_changes=false" >> "$GITHUB_OUTPUT"
           else
-            echo "has_new_files=true" >> "$GITHUB_OUTPUT"
+            echo "has_cdc_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
+          if [ -z "$added_files" ]; then
+            echo "has_new_cdc_files=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_new_cdc_files=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if no CDC changes
+        if: steps.detect_cdc_files.outputs.has_cdc_changes != 'true'
+        run: |
+          echo "No CDC changes to process."
+
       - name: Install Databricks CLI
-        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        if: steps.detect_cdc_files.outputs.has_cdc_changes == 'true'
         uses: databricks/setup-cli@main
 
-      - name: Install uv
-        if: steps.detect_new_files.outputs.has_new_files == 'true'
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
       - name: Check Databricks auth
-        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        if: steps.detect_cdc_files.outputs.has_cdc_changes == 'true'
         run: |
           databricks current-user me
 
-      - name: Validate bundle
-        if: steps.detect_new_files.outputs.has_new_files == 'true'
+      - name: Validate bundle configuration only
+        if: steps.detect_cdc_files.outputs.has_cdc_changes == 'true'
         run: |
           databricks bundle validate -t dev
 
-      - name: Deploy bundle
-        if: steps.detect_new_files.outputs.has_new_files == 'true'
+      - name: Confirm CDC job resource exists in bundle summary
+        if: steps.detect_cdc_files.outputs.has_cdc_changes == 'true'
         run: |
-          databricks bundle deploy -t dev
+          databricks bundle summary -t dev | tee /tmp/bundle_summary.txt
+
+          if ! grep -q "$CDC_JOB_RESOURCE" /tmp/bundle_summary.txt; then
+            echo "ERROR: Bundle resource '$CDC_JOB_RESOURCE' was not found."
+            echo "This workflow intentionally does not run 'databricks bundle deploy' to avoid stale Terraform delete errors."
+            echo "Please deploy the bundle from Databricks Bundle CI or locally before running CDC automation."
+            exit 1
+          fi
 
       - name: Run ApprovalMax CDC automation serverless job
-        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        if: steps.detect_cdc_files.outputs.has_cdc_changes == 'true'
         run: |
-          databricks bundle run approvalmax_cdc_automation_serverless -t dev
+          databricks bundle run "$CDC_JOB_RESOURCE" -t dev
+
+      - name: Print next workflow expectation
+        if: steps.detect_cdc_files.outputs.has_cdc_changes == 'true'
+        run: |
+          echo "CDC automation finished."
+          echo "If configured, downstream workflows should run next:"
+          echo "1. Run dbt Gold Models"
+          echo "2. Run ApprovalMax Great Expectations"
+          echo "3. Refresh ApprovalMax Databricks Dashboard Tables"
