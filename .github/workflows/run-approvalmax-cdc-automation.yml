@@ -1,0 +1,71 @@
+name: Run ApprovalMax CDC Automation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "sample_data/approvalmax_cdc/**"
+
+permissions:
+  contents: read
+
+jobs:
+  run-approvalmax-cdc-automation:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect newly added CDC files
+        id: detect_new_files
+        run: |
+          added_files="$(git diff --name-status HEAD~1 HEAD | awk '$1 == "A" {print $2}' | grep '^sample_data/approvalmax_cdc/' || true)"
+
+          echo "Newly added CDC files:"
+          echo "$added_files"
+
+          if [ -z "$added_files" ]; then
+            echo "No newly added CDC files. Skipping Databricks CDC job."
+            echo "has_new_files=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_new_files=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Databricks CLI
+        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        uses: databricks/setup-cli@main
+
+      - name: Install uv
+        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Check Databricks auth
+        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        run: |
+          databricks current-user me
+
+      - name: Validate bundle
+        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        run: |
+          databricks bundle validate -t dev
+
+      - name: Deploy bundle
+        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        run: |
+          databricks bundle deploy -t dev
+
+      - name: Run ApprovalMax CDC automation serverless job
+        if: steps.detect_new_files.outputs.has_new_files == 'true'
+        run: |
+          databricks bundle run approvalmax_cdc_automation_serverless -t dev
