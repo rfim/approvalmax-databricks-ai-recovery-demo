@@ -12,3 +12,6 @@ scratch/**
 auth.json
 *.log
 recovery/failed_workflow.log
+.agents/
+.ai-dev-kit/
+vim/
