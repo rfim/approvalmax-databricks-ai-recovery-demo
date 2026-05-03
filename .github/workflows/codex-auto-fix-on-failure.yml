@@ -67,9 +67,9 @@ jobs:
         run: |
           mkdir -p recovery
           gh run view "$FAILED_RUN_ID" --log > recovery/failed_workflow.log || true
-          tail -n 160 recovery/failed_workflow.log || true
+          tail -n 120 recovery/failed_workflow.log || true
 
-      - name: Create improved failure context
+      - name: Create brief actionable failure context
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -78,74 +78,91 @@ jobs:
           log = Path("recovery/failed_workflow.log").read_text(errors="ignore")
           lower = log.lower()
 
-          if "schema_not_found" in lower or ("schema" in lower and "cannot be found" in lower):
-              failure_type = "missing_schema"
-          elif "uv: command not found" in lower:
-              failure_type = "missing_tool_uv"
-          elif "cannot configure default credentials" in lower or "default auth" in lower:
-              failure_type = "databricks_auth_failure"
-          elif "bundle validate" in lower or ("deploying resources" in lower and "error" in lower):
-              failure_type = "bundle_resource_failure"
-          elif "cannot cast" in lower or "type mismatch" in lower:
-              failure_type = "schema_type_change"
-          elif "duplicate" in lower or "unique" in lower:
-              failure_type = "duplicate_or_grain_failure"
-          elif "not_null" in lower or "null value" in lower:
-              failure_type = "missing_required_value"
-          elif "approval_cycle_time" in lower or "negative" in lower:
-              failure_type = "invalid_business_metric"
-          else:
-              failure_type = "unknown_failure"
-
-          # Capture useful error excerpt around SCHEMA_NOT_FOUND instead of only the tail stacktrace.
-          marker = "SCHEMA_NOT_FOUND"
-          idx = log.find(marker)
-          if idx >= 0:
-              start = max(0, idx - 3000)
-              end = min(len(log), idx + 5000)
-              error_excerpt = log[start:end]
-          else:
-              error_excerpt = log[-12000:]
-
-          # Find likely files to patch.
           candidate_files = []
-          for pattern in ["*.py", "*.ipynb", "*.sql", "*.yml", "*.yaml"]:
-              for path in Path(".").rglob(pattern):
-                  if ".git" in path.parts:
-                      continue
-                  if "recovery" in path.parts:
-                      continue
-                  try:
-                      text = path.read_text(errors="ignore")
-                  except Exception:
-                      continue
-                  if (
-                      "USE SCHEMA" in text
-                      or "USE CATALOG" in text
-                      or 'dbutils.widgets.get("schema")' in text
-                      or "dbutils.widgets.get('schema')" in text
-                  ):
-                      candidate_files.append(str(path))
+          for path in Path(".").rglob("*"):
+              if ".git" in path.parts or "recovery" in path.parts:
+                  continue
+              if path.suffix not in [".py", ".ipynb", ".sql", ".yml", ".yaml"]:
+                  continue
+              try:
+                  text = path.read_text(errors="ignore")
+              except Exception:
+                  continue
+              if (
+                  "USE SCHEMA" in text
+                  or 'dbutils.widgets.get("schema")' in text
+                  or "dbutils.widgets.get('schema')" in text
+              ):
+                  candidate_files.append(str(path))
 
-          context = {
-              "failed_run_url": "${{ env.FAILED_RUN_URL }}",
-              "failure_type": failure_type,
-              "error_excerpt": error_excerpt,
-              "candidate_files_to_inspect": candidate_files,
-              "expected_fix_for_missing_schema": {
-                  "insert_before": "spark.sql(f\"USE SCHEMA {schema}\")",
-                  "insert_line": "spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")"
-              },
-              "instruction": "Use AGENTS.md and skills/approvalmax-semi-self-recovery/SKILL.md. Keep the patch minimal and safe.",
-              "log_tail": log[-20000:]
-          }
+          if "schema_not_found" in lower or ("schema" in lower and "cannot be found" in lower):
+              context = {
+                  "failure_type": "missing_schema",
+                  "severity": "medium",
+                  "specific_error": "SCHEMA_NOT_FOUND: workspace.engineer_support cannot be found",
+                  "root_cause": "The Databricks job runs USE SCHEMA before ensuring the schema exists.",
+                  "failed_task": "sample_job.notebook_task",
+                  "failed_command": "databricks bundle run sample_job -t dev",
+                  "failed_code_line": "spark.sql(f\\\"USE SCHEMA {schema}\\\")",
+                  "candidate_files_to_patch": candidate_files,
+                  "required_fix": {
+                      "insert_before": "spark.sql(f\\\"USE SCHEMA {schema}\\\")",
+                      "insert_line": "spark.sql(f\\\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\\\")"
+                  },
+                  "valid_pr_must_change": [
+                      "src/databricks_ai/main.py",
+                      "src/sample_notebook.ipynb",
+                      "docs/recovery/*.md"
+                  ],
+                  "invalid_pr_if_only_changes": [
+                      "recovery/failure_context.json",
+                      "recovery/failed_workflow.log"
+                  ],
+                  "validation_commands": [
+                      "databricks bundle validate -t dev",
+                      "databricks bundle deploy -t dev",
+                      "databricks bundle run sample_job -t dev"
+                  ]
+              }
+          elif "uv: command not found" in lower:
+              context = {
+                  "failure_type": "missing_tool_uv",
+                  "severity": "low",
+                  "specific_error": "uv command is missing in GitHub Actions runner.",
+                  "root_cause": "The bundle build uses uv, but the workflow did not install uv.",
+                  "candidate_files_to_patch": [".github/workflows/databricks-bundle-ci.yml", ".github/workflows/run-databricks-job.yml"],
+                  "required_fix": {
+                      "add_step": "Install uv before databricks bundle validate/deploy/build"
+                  },
+                  "valid_pr_must_change": [".github/workflows/*.yml", "docs/recovery/*.md"],
+                  "invalid_pr_if_only_changes": ["recovery/failure_context.json", "recovery/failed_workflow.log"]
+              }
+          elif "cannot configure default credentials" in lower or "default auth" in lower:
+              context = {
+                  "failure_type": "databricks_auth_failure",
+                  "severity": "high",
+                  "specific_error": "Databricks CLI cannot configure credentials.",
+                  "root_cause": "The GitHub Actions workflow may not be passing DATABRICKS_HOST and DATABRICKS_TOKEN correctly.",
+                  "candidate_files_to_patch": [".github/workflows/databricks-bundle-ci.yml", ".github/workflows/run-databricks-job.yml"],
+                  "required_fix": {
+                      "check_env": "Use DATABRICKS_HOST and DATABRICKS_TOKEN from GitHub secrets and add databricks current-user me diagnostic."
+                  },
+                  "valid_pr_must_change": [".github/workflows/*.yml", "docs/recovery/*.md"],
+                  "invalid_pr_if_only_changes": ["recovery/failure_context.json", "recovery/failed_workflow.log"]
+              }
+          else:
+              context = {
+                  "failure_type": "unknown_failure",
+                  "severity": "medium",
+                  "specific_error": "Unknown failure. See recovery/failed_workflow.log.",
+                  "root_cause": "Requires human investigation.",
+                  "candidate_files_to_patch": candidate_files,
+                  "valid_pr_must_change": ["docs/recovery/*.md"],
+                  "invalid_pr_if_only_changes": ["recovery/failure_context.json"]
+              }
 
           Path("recovery/failure_context.json").write_text(json.dumps(context, indent=2))
-          print(json.dumps({
-              "failure_type": failure_type,
-              "candidate_files_to_inspect": candidate_files,
-              "failed_run_url": "${{ env.FAILED_RUN_URL }}"
-          }, indent=2))
+          print(json.dumps(context, indent=2))
           PY
 
       - name: Run Codex recovery
@@ -153,7 +170,7 @@ jobs:
           codex exec --sandbox workspace-write "
           Follow AGENTS.md strictly.
 
-          Read these files first:
+          Read:
           - recovery/failed_workflow.log
           - recovery/failure_context.json
           - skills/approvalmax-semi-self-recovery/SKILL.md
@@ -162,23 +179,23 @@ jobs:
           - src/
           - .github/workflows/
 
-          Use recovery/failure_context.json as the source of truth for:
-          - failure_type
-          - error_excerpt
-          - candidate_files_to_inspect
-          - expected_fix_for_missing_schema
+          Use recovery/failure_context.json as the source of truth.
 
           Create the smallest safe patch for the detected failure.
 
-          For failure_type = missing_schema:
-          - Inspect every file listed in candidate_files_to_inspect.
-          - Find the file that contains USE SCHEMA or dbutils.widgets.get(\"schema\").
+          Important:
+          - Do not create a PR that only modifies recovery/failure_context.json or recovery/failed_workflow.log.
+          - For missing_schema, a valid PR must modify one of the candidate_files_to_patch containing USE SCHEMA or dbutils.widgets.get(\"schema\").
+          - If the failure is unknown_failure, only then create a diagnostic note under docs/recovery/.
+
+          If failure_type is missing_schema:
+          - Patch the file containing spark.sql(f\"USE SCHEMA {schema}\").
           - Add this line before USE SCHEMA:
             spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")
           - Preserve existing catalog and schema variables.
-          - Do not hardcode workspace.engineer_support directly if catalog/schema variables already exist.
+          - Do not hardcode workspace.engineer_support if variables already exist.
           - Add a recovery note under docs/recovery/.
-          - The final logic should be:
+          - Final expected logic:
             spark.sql(f\"USE CATALOG {catalog}\")
             spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")
             spark.sql(f\"USE SCHEMA {schema}\")
@@ -189,21 +206,6 @@ jobs:
           If failure_type is databricks_auth_failure:
           - Fix workflow env usage if needed.
           - Never print secrets.
-
-          If failure_type is bundle_resource_failure:
-          - Fix databricks.yml or resources/*.yml minimally.
-
-          If failure_type is schema_type_change:
-          - Add safe cast, quarantine logic, and a test where appropriate.
-
-          If failure_type is duplicate_or_grain_failure:
-          - Add deterministic deduplication and a uniqueness/grain test.
-
-          If failure_type is missing_required_value:
-          - Add quarantine logic and not-null test. Do not fabricate business keys.
-
-          If failure_type is invalid_business_metric:
-          - Add diagnostics, tests, and quarantine. Do not redefine metrics.
 
           If failure_type is unknown_failure:
           - Create only a diagnostic note under docs/recovery/.
@@ -219,6 +221,23 @@ jobs:
         run: |
           git status
           git diff
+
+      - name: Validate Codex produced meaningful changes
+        run: |
+          changed_files="$(git diff --name-only)"
+          echo "$changed_files"
+
+          if [ -z "$changed_files" ]; then
+            echo "Codex produced no changes."
+            exit 1
+          fi
+
+          meaningful_files="$(echo "$changed_files" | grep -v '^recovery/' || true)"
+
+          if [ -z "$meaningful_files" ]; then
+            echo "Codex only changed recovery files. This is not a meaningful recovery PR."
+            exit 1
+          fi
 
       - name: Create pull request with Codex fix
         uses: peter-evans/create-pull-request@v6
