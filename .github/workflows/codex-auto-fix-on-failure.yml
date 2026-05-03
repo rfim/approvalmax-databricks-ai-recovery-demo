@@ -137,19 +137,6 @@ jobs:
                   "valid_pr_must_change": [".github/workflows/*.yml", "docs/recovery/*.md"],
                   "invalid_pr_if_only_changes": ["recovery/failure_context.json", "recovery/failed_workflow.log"]
               }
-          elif "cannot configure default credentials" in lower or "default auth" in lower:
-              context = {
-                  "failure_type": "databricks_auth_failure",
-                  "severity": "high",
-                  "specific_error": "Databricks CLI cannot configure credentials.",
-                  "root_cause": "The GitHub Actions workflow may not be passing DATABRICKS_HOST and DATABRICKS_TOKEN correctly.",
-                  "candidate_files_to_patch": [".github/workflows/databricks-bundle-ci.yml", ".github/workflows/run-databricks-job.yml"],
-                  "required_fix": {
-                      "check_env": "Use DATABRICKS_HOST and DATABRICKS_TOKEN from GitHub secrets and add databricks current-user me diagnostic."
-                  },
-                  "valid_pr_must_change": [".github/workflows/*.yml", "docs/recovery/*.md"],
-                  "invalid_pr_if_only_changes": ["recovery/failure_context.json", "recovery/failed_workflow.log"]
-              }
           else:
               context = {
                   "failure_type": "unknown_failure",
@@ -166,6 +153,7 @@ jobs:
           PY
 
       - name: Run Codex recovery
+        continue-on-error: true
         run: |
           codex exec --sandbox workspace-write "
           Follow AGENTS.md strictly.
@@ -200,13 +188,6 @@ jobs:
             spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")
             spark.sql(f\"USE SCHEMA {schema}\")
 
-          If failure_type is missing_tool_uv:
-          - Add Install uv step to the relevant workflow.
-
-          If failure_type is databricks_auth_failure:
-          - Fix workflow env usage if needed.
-          - Never print secrets.
-
           If failure_type is unknown_failure:
           - Create only a diagnostic note under docs/recovery/.
 
@@ -217,38 +198,138 @@ jobs:
           Do not touch unrelated files.
           "
 
+      - name: Deterministic fallback if Codex produced no changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          context_path = Path("recovery/failure_context.json")
+          context = json.loads(context_path.read_text())
+          failure_type = context.get("failure_type")
+
+          # If Codex already made a meaningful change, do nothing.
+          import subprocess
+          changed = subprocess.run(
+              ["git", "diff", "--name-only"],
+              capture_output=True,
+              text=True,
+              check=True
+          ).stdout.strip().splitlines()
+
+          meaningful = [f for f in changed if not f.startswith("recovery/")]
+          if meaningful:
+              print("Codex already produced meaningful changes:", meaningful)
+              raise SystemExit(0)
+
+          if failure_type != "missing_schema":
+              print("No deterministic fallback for failure_type:", failure_type)
+              raise SystemExit(0)
+
+          candidates = context.get("candidate_files_to_patch") or []
+          if not candidates:
+              candidates = ["src/databricks_ai/main.py", "src/sample_notebook.ipynb"]
+
+          patched = []
+
+          plain_old = 'spark.sql(f"USE SCHEMA {schema}")'
+          plain_new = 'spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")\n' + plain_old
+
+          escaped_old = 'spark.sql(f\\"USE SCHEMA {schema}\\")'
+          escaped_new = 'spark.sql(f\\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\\")\\n",\n    "' + escaped_old
+
+          for raw_path in candidates:
+              path = Path(raw_path)
+              if not path.exists():
+                  continue
+
+              text = path.read_text(encoding="utf-8", errors="ignore")
+              original = text
+
+              if "CREATE SCHEMA IF NOT EXISTS" in text:
+                  continue
+
+              if plain_old in text:
+                  text = text.replace(plain_old, plain_new, 1)
+              elif escaped_old in text:
+                  text = text.replace(escaped_old, escaped_new, 1)
+              else:
+                  # Regex fallback for normal Python files.
+                  text = re.sub(
+                      r'(spark\.sql\(f["\']USE SCHEMA \{schema\}["\']\))',
+                      'spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")\n\\1',
+                      text,
+                      count=1
+                  )
+
+              if text != original:
+                  path.write_text(text, encoding="utf-8")
+                  patched.append(str(path))
+
+          Path("docs/recovery").mkdir(parents=True, exist_ok=True)
+          note = Path("docs/recovery/missing_schema_recovery.md")
+          note.write_text(
+              "# Missing Schema Recovery\n\n"
+              "## Root cause\n\n"
+              "The Databricks job failed because it ran `USE SCHEMA` before ensuring the target schema existed.\n\n"
+              "## Fix\n\n"
+              "Added an idempotent schema creation statement before `USE SCHEMA`:\n\n"
+              "```python\n"
+              "spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")\n"
+              "spark.sql(f\"USE SCHEMA {schema}\")\n"
+              "```\n\n"
+              "## Validation\n\n"
+              "```bash\n"
+              "databricks bundle validate -t dev\n"
+              "databricks bundle deploy -t dev\n"
+              "databricks bundle run sample_job -t dev\n"
+              "```\n\n"
+              "## Human review checklist\n\n"
+              "- [ ] Confirm catalog/schema variables are correct\n"
+              "- [ ] Confirm no production catalog is affected\n"
+              "- [ ] Confirm sample_job succeeds after merge\n",
+              encoding="utf-8"
+          )
+          patched.append(str(note))
+
+          print("Deterministic fallback patched:", patched)
+          PY
+
       - name: Show generated diff
         run: |
           git status
           git diff
 
-      - name: Validate Codex produced meaningful changes
+      - name: Validate recovery PR is meaningful
         run: |
           changed_files="$(git diff --name-only)"
           echo "$changed_files"
 
           if [ -z "$changed_files" ]; then
-            echo "Codex produced no changes."
+            echo "No changes were produced."
             exit 1
           fi
 
           meaningful_files="$(echo "$changed_files" | grep -v '^recovery/' || true)"
 
           if [ -z "$meaningful_files" ]; then
-            echo "Codex only changed recovery files. This is not a meaningful recovery PR."
+            echo "Only recovery files changed. This is not a meaningful recovery PR."
             exit 1
           fi
 
-      - name: Create pull request with Codex fix
+      - name: Create pull request with Codex or fallback fix
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "fix: codex recovery patch for failed workflow"
+          commit-message: "fix: recovery patch for failed workflow"
           branch: codex/auto-fix-${{ github.run_id }}
           base: main
-          title: "[AI-DRAFT] Codex recovery patch for failed Databricks workflow"
+          title: "[AI-DRAFT] Recovery patch for failed Databricks workflow"
           body: |
-            Codex generated this draft PR after a failed workflow.
+            This draft PR was created after a failed Databricks workflow.
+
+            The workflow first attempted a Codex recovery. If Codex produced no meaningful changes, a deterministic fallback patched the known `missing_schema` failure.
 
             Failed workflow:
             ${{ env.FAILED_RUN_URL }}
