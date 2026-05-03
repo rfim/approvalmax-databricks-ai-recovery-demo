@@ -19,7 +19,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
       FAILED_RUN_URL: ${{ github.event.workflow_run.html_url }}
@@ -47,13 +46,22 @@ jobs:
           npm install -g @openai/codex
           codex --version
 
-      - name: Check OpenAI API key presence
+      - name: Check Codex auth secret presence
         run: |
-          test -n "$OPENAI_API_KEY" && echo "OPENAI_API_KEY is set"
+          test -n "$CODEX_AUTH_JSON" && echo "CODEX_AUTH_JSON is set"
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
 
-      - name: Authenticate Codex with API key
+      - name: Restore Codex auth.json
         run: |
-          printenv OPENAI_API_KEY | codex login --with-api-key
+          mkdir -p "$HOME/.codex"
+          printf '%s' "$CODEX_AUTH_JSON" > "$HOME/.codex/auth.json"
+          chmod 600 "$HOME/.codex/auth.json"
+          cat > "$HOME/.codex/config.toml" <<'EOF'
+          cli_auth_credentials_store = "file"
+          EOF
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
 
       - name: Download failed workflow logs
         run: |
@@ -150,6 +158,7 @@ jobs:
           Do not auto-merge.
           Do not disable tests.
           Do not change secrets.
+          Do not print secrets.
           Do not touch unrelated files.
           "
 
@@ -182,6 +191,7 @@ jobs:
             - [ ] Patch is minimal
             - [ ] No tests were disabled
             - [ ] No secrets were changed
+            - [ ] No secrets were printed
             - [ ] No unrelated files were touched
             - [ ] Databricks bundle validation passes
             - [ ] The failed workflow passes after merge

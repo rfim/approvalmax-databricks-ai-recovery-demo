@@ -8,3 +8,7 @@ scratch/**
 !scratch/README.md
 **/explorations/**
 **/!explorations/README.md
+.codex/
+auth.json
+*.log
+recovery/failed_workflow.log
