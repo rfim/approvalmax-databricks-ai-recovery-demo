@@ -15,3 +15,5 @@ recovery/failed_workflow.log
 .agents/
 .ai-dev-kit/
 vim/
+profiles.yml
+recovery/
