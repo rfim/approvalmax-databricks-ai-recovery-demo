@@ -172,7 +172,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "fix: codex recovery patch for failed workflow"
-          branch: codex/auto-fix-${{ github.event.workflow_run.run_id }}
+          branch: codex/auto-fix-${{ github.run_id }}
           base: main
           title: "[AI-DRAFT] Codex recovery patch for failed Databricks workflow"
           body: |
