@@ -1,17 +1,8 @@
 resources:
   jobs:
-    approvalmax_cdc_automation:
-      name: approvalmax_cdc_automation_${bundle.target}
+    approvalmax_cdc_automation_cluster:
+      name: approvalmax_cdc_automation_cluster_${bundle.target}
 
-      # IMPORTANT:
-      # This job intentionally uses a classic job cluster.
-      # Do not use:
-      #   environment_key: default
-      #   environments:
-      #     - spec:
-      #         client: "1"
-      #
-      # Some workspaces do not support the Client-1 REPL channel for spark_python_task.
       job_clusters:
         - job_cluster_key: approvalmax_demo_cluster
           new_cluster:
