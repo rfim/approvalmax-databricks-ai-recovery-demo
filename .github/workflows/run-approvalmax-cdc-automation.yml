@@ -65,7 +65,7 @@ jobs:
         run: |
           databricks bundle deploy -t dev
 
-      - name: Run ApprovalMax CDC automation job
+      - name: Run ApprovalMax CDC automation serverless job
         if: steps.detect_new_files.outputs.has_new_files == 'true'
         run: |
-          databricks bundle run approvalmax_cdc_automation -t dev
+          databricks bundle run approvalmax_cdc_automation_serverless -t dev

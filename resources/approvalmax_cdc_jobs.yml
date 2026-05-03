@@ -1,43 +1,9 @@
 resources:
   jobs:
-    approvalmax_cdc_automation:
-      name: approvalmax_cdc_automation_${bundle.target}
+    approvalmax_cdc_automation_serverless:
+      name: approvalmax_cdc_automation_serverless_${bundle.target}
 
       tasks:
-        - task_key: load_cdc_to_bronze
-          spark_python_task:
-            python_file: ../src/databricks_ai/load_cdc_to_bronze.py
-          environment_key: default
-
-        - task_key: build_silver_stage
-          depends_on:
-            - task_key: load_cdc_to_bronze
-          spark_python_task:
-            python_file: ../src/databricks_ai/build_silver_stage.py
-          environment_key: default
-
-        - task_key: build_data_vault
-          depends_on:
-            - task_key: build_silver_stage
-          spark_python_task:
-            python_file: ../src/databricks_ai/build_data_vault.py
-          environment_key: default
-
-        - task_key: build_gold_mart
-          depends_on:
-            - task_key: build_data_vault
-          spark_python_task:
-            python_file: ../src/databricks_ai/build_gold_mart.py
-          environment_key: default
-
-        - task_key: run_quality_checks
-          depends_on:
-            - task_key: build_gold_mart
-          spark_python_task:
-            python_file: ../src/databricks_ai/run_quality_checks.py
-          environment_key: default
-
-      environments:
-        - environment_key: default
-          spec:
-            client: "1"
+        - task_key: run_cdc_automation
+          notebook_task:
+            notebook_path: ../src/approvalmax_cdc_automation_notebook.ipynb
