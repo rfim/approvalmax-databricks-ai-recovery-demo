@@ -1,0 +1,27 @@
+name: databricks_ai
+version: "1.0.0"
+config-version: 2
+
+profile: databricks_ai
+
+model-paths:
+  - models
+
+test-paths:
+  - tests
+
+macro-paths:
+  - macros
+
+target-path: target
+
+clean-targets:
+  - target
+  - dbt_packages
+
+models:
+  databricks_ai:
+    gold:
+      +materialized: table
+      +catalog: workspace
+      +schema: engineer_support_gold

@@ -1,0 +1,32 @@
+version: 2
+
+sources:
+  - name: silver
+    description: "Silver layer tables created by the ApprovalMax CDC serverless automation."
+    catalog: workspace
+    schema: engineer_support_silver
+    tables:
+      - name: finance_documents_current
+      - name: companies_current
+      - name: approval_events
+
+  - name: vault
+    description: "Raw Vault-style tables created by the ApprovalMax CDC serverless automation."
+    catalog: workspace
+    schema: engineer_support_vault
+    tables:
+      - name: hub_company
+      - name: hub_finance_document
+      - name: hub_approval_event
+      - name: link_document_company
+      - name: link_document_approval_event
+      - name: sat_finance_document_status
+      - name: sat_finance_document_amount
+      - name: sat_approval_event_detail
+
+  - name: gold_existing
+    description: "Notebook-built Gold table for comparison with dbt-built Gold mart."
+    catalog: workspace
+    schema: engineer_support_gold
+    tables:
+      - name: fact_approval_document_lifecycle

@@ -1,0 +1,11 @@
+databricks_ai:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      catalog: workspace
+      schema: engineer_support_gold
+      host: "{{ env_var('DATABRICKS_HOST') }}"
+      http_path: "/sql/1.0/warehouses/55b9eec3660b38e1"
+      token: "{{ env_var('DATABRICKS_TOKEN') }}"
+      threads: 4

@@ -1,0 +1,59 @@
+version: 2
+
+models:
+  - name: fact_approval_document_lifecycle_dbt
+    description: "dbt-built Gold lifecycle mart for ApprovalMax-style finance document approval analytics."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - document_id
+
+    columns:
+      - name: document_id
+        description: "Business key for the finance document."
+        tests:
+          - not_null
+          - unique
+
+      - name: company_id
+        description: "Business key for the ApprovalMax company/organisation."
+        tests:
+          - not_null
+
+      - name: document_type
+        tests:
+          - not_null
+
+      - name: document_status
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - draft
+                - submitted
+                - approved
+                - rejected
+                - paid
+                - cancelled
+
+      - name: total_amount
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+      - name: currency
+        tests:
+          - not_null
+
+      - name: approval_cycle_time_minutes
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              config:
+                where: "approval_cycle_time_minutes is not null"
+
+      - name: approval_sla_breach_flag
+        tests:
+          - accepted_values:
+              values: [0, 1]
