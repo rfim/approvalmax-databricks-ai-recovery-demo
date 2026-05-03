@@ -1,0 +1,32 @@
+{
+  "failure_type": "missing_schema",
+  "severity": "medium",
+  "specific_error": "SCHEMA_NOT_FOUND: workspace.engineer_support cannot be found",
+  "root_cause": "The Databricks job runs USE SCHEMA before ensuring the schema exists.",
+  "failed_task": "sample_job.notebook_task",
+  "failed_command": "databricks bundle run sample_job -t dev",
+  "failed_code_line": "spark.sql(f\\\"USE SCHEMA {schema}\\\")",
+  "candidate_files_to_patch": [
+    "src/sample_notebook.ipynb",
+    "src/databricks_ai/main.py",
+    ".github/workflows/codex-auto-fix-on-failure.yml"
+  ],
+  "required_fix": {
+    "insert_before": "spark.sql(f\\\"USE SCHEMA {schema}\\\")",
+    "insert_line": "spark.sql(f\\\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\\\")"
+  },
+  "valid_pr_must_change": [
+    "src/databricks_ai/main.py",
+    "src/sample_notebook.ipynb",
+    "docs/recovery/*.md"
+  ],
+  "invalid_pr_if_only_changes": [
+    "recovery/failure_context.json",
+    "recovery/failed_workflow.log"
+  ],
+  "validation_commands": [
+    "databricks bundle validate -t dev",
+    "databricks bundle deploy -t dev",
+    "databricks bundle run sample_job -t dev"
+  ]
+}
