@@ -67,9 +67,9 @@ jobs:
         run: |
           mkdir -p recovery
           gh run view "$FAILED_RUN_ID" --log > recovery/failed_workflow.log || true
-          tail -n 120 recovery/failed_workflow.log || true
+          tail -n 160 recovery/failed_workflow.log || true
 
-      - name: Create failure context
+      - name: Create improved failure context
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -97,15 +97,55 @@ jobs:
           else:
               failure_type = "unknown_failure"
 
+          # Capture useful error excerpt around SCHEMA_NOT_FOUND instead of only the tail stacktrace.
+          marker = "SCHEMA_NOT_FOUND"
+          idx = log.find(marker)
+          if idx >= 0:
+              start = max(0, idx - 3000)
+              end = min(len(log), idx + 5000)
+              error_excerpt = log[start:end]
+          else:
+              error_excerpt = log[-12000:]
+
+          # Find likely files to patch.
+          candidate_files = []
+          for pattern in ["*.py", "*.ipynb", "*.sql", "*.yml", "*.yaml"]:
+              for path in Path(".").rglob(pattern):
+                  if ".git" in path.parts:
+                      continue
+                  if "recovery" in path.parts:
+                      continue
+                  try:
+                      text = path.read_text(errors="ignore")
+                  except Exception:
+                      continue
+                  if (
+                      "USE SCHEMA" in text
+                      or "USE CATALOG" in text
+                      or 'dbutils.widgets.get("schema")' in text
+                      or "dbutils.widgets.get('schema')" in text
+                  ):
+                      candidate_files.append(str(path))
+
           context = {
               "failed_run_url": "${{ env.FAILED_RUN_URL }}",
               "failure_type": failure_type,
+              "error_excerpt": error_excerpt,
+              "candidate_files_to_inspect": candidate_files,
+              "expected_fix_for_missing_schema": {
+                  "insert_before": "spark.sql(f\"USE SCHEMA {schema}\")",
+                  "insert_line": "spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")"
+              },
               "instruction": "Use AGENTS.md and skills/approvalmax-semi-self-recovery/SKILL.md. Keep the patch minimal and safe.",
               "log_tail": log[-20000:]
           }
 
           Path("recovery/failure_context.json").write_text(json.dumps(context, indent=2))
-          print(json.dumps({k: v for k, v in context.items() if k != "log_tail"}, indent=2))
+          print(json.dumps({
+              "failure_type": failure_type,
+              "candidate_files_to_inspect": candidate_files,
+              "failed_run_url": "${{ env.FAILED_RUN_URL }}"
+          }, indent=2))
           PY
 
       - name: Run Codex recovery
@@ -113,7 +153,7 @@ jobs:
           codex exec --sandbox workspace-write "
           Follow AGENTS.md strictly.
 
-          Read:
+          Read these files first:
           - recovery/failed_workflow.log
           - recovery/failure_context.json
           - skills/approvalmax-semi-self-recovery/SKILL.md
@@ -122,13 +162,26 @@ jobs:
           - src/
           - .github/workflows/
 
+          Use recovery/failure_context.json as the source of truth for:
+          - failure_type
+          - error_excerpt
+          - candidate_files_to_inspect
+          - expected_fix_for_missing_schema
+
           Create the smallest safe patch for the detected failure.
 
-          If failure_type is missing_schema:
-          - Find the file that runs USE SCHEMA.
-          - Add CREATE SCHEMA IF NOT EXISTS before USE SCHEMA.
-          - Preserve existing catalog/schema variables.
+          For failure_type = missing_schema:
+          - Inspect every file listed in candidate_files_to_inspect.
+          - Find the file that contains USE SCHEMA or dbutils.widgets.get(\"schema\").
+          - Add this line before USE SCHEMA:
+            spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")
+          - Preserve existing catalog and schema variables.
+          - Do not hardcode workspace.engineer_support directly if catalog/schema variables already exist.
           - Add a recovery note under docs/recovery/.
+          - The final logic should be:
+            spark.sql(f\"USE CATALOG {catalog}\")
+            spark.sql(f\"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}\")
+            spark.sql(f\"USE SCHEMA {schema}\")
 
           If failure_type is missing_tool_uv:
           - Add Install uv step to the relevant workflow.
