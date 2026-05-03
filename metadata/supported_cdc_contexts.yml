@@ -1,0 +1,34 @@
+supported_contexts:
+  companies:
+    business_key: company_id
+    silver_table: companies_current
+    gold_tables:
+      - dim_company
+
+  finance_documents:
+    business_key: document_id
+    silver_table: finance_documents_current
+    gold_tables:
+      - dim_finance_document
+      - fact_approval_document_lifecycle
+      - fact_document_amount_by_supplier
+
+  approval_events:
+    business_key: event_id
+    silver_table: approval_events
+    gold_tables:
+      - dim_workflow
+      - fact_approval_events
+
+  subscriptions:
+    business_key: subscription_id
+    silver_table: subscriptions_current
+    gold_tables:
+      - dim_subscription
+      - fact_subscription_snapshot
+
+  users:
+    business_key: user_id
+    silver_table: users_current
+    gold_tables:
+      - dim_user
