@@ -38,17 +38,22 @@ jobs:
 
       - name: Detect new CDC contexts
         id: detect
-        continue-on-error: true
         run: |
+          set +e
           python scripts/detect_new_cdc_contexts.py
           exit_code=$?
+          set -e
+
+          echo "Detector exit code: $exit_code"
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
 
           if [ "$exit_code" = "10" ]; then
             echo "has_new_contexts=true" >> "$GITHUB_OUTPUT"
+            echo "New CDC contexts detected."
             exit 0
           elif [ "$exit_code" = "0" ]; then
             echo "has_new_contexts=false" >> "$GITHUB_OUTPUT"
+            echo "No new CDC contexts detected."
             exit 0
           else
             echo "Detector failed with exit code $exit_code"
@@ -148,11 +153,11 @@ jobs:
 
           for context in detection.get("new_contexts", []):
               inferred = detection["inferred"].get(context, {})
-              business_key = inferred.get("candidate_business_key") or f"{context}_id"
+              business_key = inferred.get("candidate_business_key") or f"{context.rstrip('s')}_id"
               registry["supported_contexts"][context] = {
                   "business_key": business_key,
                   "silver_table": inferred.get("candidate_silver_table", f"{context}_current"),
-                  "gold_tables": inferred.get("candidate_gold_tables", [f"dim_{context}"]),
+                  "gold_tables": inferred.get("candidate_gold_tables", [f"dim_{context.rstrip('s')}"]),
                   "human_review_required": True,
                   "status": "candidate_detected_from_cdc",
               }
@@ -164,14 +169,18 @@ jobs:
           doc = Path("docs/recovery/new_cdc_contexts.md")
           doc.write_text(
               "# New CDC Contexts Detected\n\n"
-              "The detector found new CDC source_table values that are not yet fully modelled.\n\n"
+              "The detector found new CDC `source_table` values that are not yet fully modelled.\n\n"
               "```json\n"
               + json.dumps(detection.get("new_contexts", []), indent=2)
               + "\n```\n\n"
+              "## Candidate modelling changes\n\n"
+              + json.dumps(detection.get("inferred", {}), indent=2)
+              + "\n\n"
               "## Required human review\n\n"
               "- Confirm business key and grain for each new context.\n"
               "- Decide whether the context should become a Silver table, Gold dimension, Gold fact, or remain Bronze-only.\n"
-              "- Add tests and Great Expectations checks before production use.\n\n",
+              "- Add tests and Great Expectations checks before production use.\n"
+              "- Confirm no financial metric definitions are changed without approval.\n",
               encoding="utf-8"
           )
 
@@ -184,6 +193,23 @@ jobs:
           git status
           git diff
 
+      - name: Validate PR has meaningful changes
+        if: steps.detect.outputs.has_new_contexts == 'true'
+        run: |
+          changed_files="$(git diff --name-only)"
+          echo "$changed_files"
+
+          if [ -z "$changed_files" ]; then
+            echo "No changes generated for new CDC context PR."
+            exit 1
+          fi
+
+          meaningful_files="$(echo "$changed_files" | grep -v '^recovery/' || true)"
+          if [ -z "$meaningful_files" ]; then
+            echo "Only recovery files changed. Refusing to create meaningless PR."
+            exit 1
+          fi
+
       - name: Create PR for new CDC context modelling
         if: steps.detect.outputs.has_new_contexts == 'true'
         uses: peter-evans/create-pull-request@v6
@@ -194,7 +220,7 @@ jobs:
           base: main
           title: "[AI-DRAFT] Add candidate modelling for new CDC contexts"
           body: |
-            This PR was created automatically after new CDC source_table contexts were detected.
+            This PR was created automatically after new CDC `source_table` contexts were detected.
 
             Please review carefully before merging.
 
