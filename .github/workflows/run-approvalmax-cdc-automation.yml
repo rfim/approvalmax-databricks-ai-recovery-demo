@@ -1,0 +1,52 @@
+name: Run ApprovalMax CDC Automation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "sample_data/approvalmax_cdc/**"
+      - "src/databricks_ai/**"
+      - "resources/**"
+      - "databricks.yml"
+      - ".github/workflows/run-approvalmax-cdc-automation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  run-approvalmax-cdc-automation:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Check Databricks auth
+        run: |
+          databricks current-user me
+
+      - name: Validate bundle
+        run: |
+          databricks bundle validate -t dev
+
+      - name: Deploy bundle
+        run: |
+          databricks bundle deploy -t dev
+
+      - name: Run ApprovalMax CDC automation job
+        run: |
+          databricks bundle run approvalmax_cdc_automation -t dev
